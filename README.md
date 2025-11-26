@@ -54,6 +54,24 @@ or
 pip3 install .
 ```
 
+## 依赖管理（使用 uv）
+
+本项目以 `uv` 管理依赖，`uv.lock` 存储了可复现的锁定版本。推荐的工作流：
+
+1. `uv sync`：根据 `pyproject.toml` 和 `uv.lock` 安装或更新本地环境。
+2. 修改依赖（手动编辑 `pyproject.toml` 或 `uv add <pkg>`）后，运行 `uv lock` 生成新的 `uv.lock`，并提交该文件。
+3. 之后再执行 `uv sync` 以让新的依赖生效。
+
+这样可以保持依赖清单与锁文件一致，便于 CI/多人协作。
+
+## 手动登录流程
+
+当 Xiaomi 返回 `code=70016` 的验证提示时，CLI 会自动通过 `selenium` 弹出浏览器让你完成验证，确认如下几点：
+
+1. 已安装 `selenium>=4.10.0`（依赖里已包含）。
+2. 本地有 Chrome/Chromium 和对应版本的 `chromedriver`，或者在运行前通过 `MI_SELENIUM_DRIVER_PATH` 指定驱动地址。
+3. 在浏览器中完成登录并等待自动跳转（最终会跳到 `https://account.xiaomi.com`），此时 .mi.token 会保存新的 cookie，后续命令即可免再次手动登录。
+
 ## Library
 ```
 MiService：XiaoMi Cloud Service
