@@ -1,9 +1,57 @@
 # MiService
-XiaoMi Cloud Service for mi.com
+XiaoMi Cloud Service for mi.com 
+This is a fork from https://github.com/Yonsm/MiService made some change for xiaogpt
+
+# 如果有无法登陆的问题请参考置顶 issue, 如果还是不行请留言
+
+## 本 fork 新增功能
+
+## -> 播放音乐
+
+```
+micli play ${mp3_url} 
+micli pause
+```
+
+## -> 播放音乐高级版
+
+```
+micli loop ${mp3_url}  # 循环播放
+micli pause
+
+# make a playlist name test.txt
+cat test.txt
+# http://192.168.6.212:8000/public/s4.mp3
+# http://192.168.6.212:8000/public/s1.mp3
+# http://192.168.6.212:8000/public/s2.mp3
+# http://193.168.6.212:8000/public/s3.mp3
+
+micli play_list test.txt # play the list
+```
+
+## -> 播放 suno.ai trending
+
+```
+micli suno 
+```
+
+## -> 播放 suno.ai trending random
+
+```
+micli suno_random
+```
+
+## -> 查看硬件信息
+
+```
+micli mina
+```
 
 ## Install
 ```
-pip3 install aiohttp aiofiles miservice
+pip3 install -U miservice_fork
+or 
+pip3 install .
 ```
 
 ## Library
@@ -25,38 +73,36 @@ MiService：XiaoMi Cloud Service
 
 ## Command Line
 ```
-MiService 2.1.2 - XiaoMi Cloud Service
-
 Usage: The following variables must be set:
            export MI_USER=<Username>
            export MI_PASS=<Password>
            export MI_DID=<Device ID|Name>
 
-Get Props: ./micli.py <siid[-piid]>[,...]
-           ./micli.py 1,1-2,1-3,1-4,2-1,2-2,3
-Set Props: ./micli.py <siid[-piid]=[#]value>[,...]
-           ./micli.py 2=60,2-1=#60,2-2=false,2-3="null",3=test
-Do Action: ./micli.py <siid[-piid]> <arg1|[]> [...]
-           ./micli.py 2 []
-           ./micli.py 5 Hello
-           ./micli.py 5-4 Hello 1
+Get Props: micli <siid[-piid]>[,...]
+           micli 1,1-2,1-3,1-4,2-1,2-2,3
+Set Props: micli <siid[-piid]=[#]value>[,...]
+           micli 2=#60,2-2=#false,3=test
+Do Action: micli <siid[-piid]> <arg1|#NA> [...] 
+           micli 2 #NA
+           micli 5 Hello
+           micli 5-4 Hello #1
 
-Call MIoT: ./micli.py <cmd=prop/get|/prop/set|action> <params>
-           ./micli.py action '{"did":"267090026","siid":5,"aiid":1,"in":["Hello"]}'
+Call MIoT: micli <cmd=prop/get|/prop/set|action> <params>
+           micli action '{"did":"267090026","siid":5,"aiid":1,"in":["Hello"]}'
 
-Call MiIO: ./micli.py /<uri> <data>
-           ./micli.py /home/device_list '{"getVirtualModel":false,"getHuamiDevices":1}'
+Call MiIO: micli /<uri> <data>
+           micli /home/device_list '{"getVirtualModel":false,"getHuamiDevices":1}'
 
-Devs List: ./micli.py list [name=full|name_keyword] [getVirtualModel=false|true] [getHuamiDevices=0|1]
-           ./micli.py list Light true 0
+Devs List: micli list [name=full|name_keyword] [getVirtualModel=false|true] [getHuamiDevices=0|1]
+           micli list Light true 0
 
-MIoT Spec: ./micli.py spec [model_keyword|type_urn] [format=text|python|json]
-           ./micli.py spec
-           ./micli.py spec speaker
-           ./micli.py spec xiaomi.wifispeaker.lx04
-           ./micli.py spec urn:miot-spec-v2:device:speaker:0000A015:xiaomi-lx04:1
+MIoT Spec: micli spec [model_keyword|type_urn] [format=text|python|json]
+           micli spec
+           micli spec speaker
+           micli spec xiaomi.wifispeaker.lx04
+           micli spec urn:miot-spec-v2:device:speaker:0000A015:xiaomi-lx04:1
 
-MIoT Decode: ./micli.py decode <ssecurity> <nonce> <data> [gzip]
+MIoT Decode: micli decode <ssecurity> <nonce> <data> [gzip]
 ```
 
 ## 套路，例子：
@@ -73,7 +119,7 @@ export MI_PASS=<Password>
 ### 2. 查询自己的设备
 
 ```
-micli.py list
+micli list
 ```
 可以显示自己账号下的设备列表，包含名称、类型、DID、Token 等信息。
 
@@ -89,7 +135,7 @@ export MI_DID=<Device ID|Name>
 
 查询设备的 MIoT 接口能力描述：
 ```
-micli.py spec xiaomi.wifispeaker.lx04
+micli spec xiaomi.wifispeaker.lx04
 ```
 其中分为属性获取、属性设置、动作调用三种描述。
 
@@ -105,10 +151,7 @@ micli.py 2-1
 ```
 micli.py 2=#60
 ```
-
-参数类型要根据接口描述文档来确定:
-- `#`是强制文本类型，还可以用单引号`'`和双引号`"`来强制文本类型`'`（可单个引号，也可以两个）;
-- 如果不强制文本类型，默认将检测类型；可能的检测结果是 JSON 的 `null`、`false`、`true`、`整数`、`浮点数`或者`文本`。
+`siid` 和 `piid` 规则同属性查询命令。注意 `#` 号的意思是整数类型，如果不带则默认是文本字符串类型，要根据接口描述文档来确定类型。
 
 ### 7. 动作调用：TTS 播报和执行文本
 
@@ -116,20 +159,41 @@ micli.py 2=#60
 ```
 micli.py 5 您好
 ```
-其中，5 为 `siid`，此处省略了 `aiid`（默认为`1`）。
+其中，5 为 `siid`，此处省略了 `1` 的 `aiid`。
 
 以下命令执行后相当于直接对对音箱说“小爱同学，查询天气”是一个效果：
 ```
-micli.py 5-4 查询天气 1
+micli.py 5-4 查询天气 #1
 ```
 
-其中 `1` 表示设备语音回应，如果要执行默默关灯（不要音箱回应），可以如下：
+其中 `#1` 表示设备语音回应，如果要执行默默关灯（不要音箱回应），可以如下：
 ```
-micli.py 5-4 关灯 0
+micli.py 5-4 关灯 #0
 ```
 
-如果没有参数，请传入`[]`保留占位。
+## 8. 播放音乐
 
-### 8. 其它应用
+```
+micli play ${mp3_url} 
+micli pause
+```
+
+## 9. 播放音乐高级版
+
+```
+micli loop ${mp3_url}  # 循环播放
+micli pause
+
+# make a playlist name test.txt
+cat test.txt
+# http://192.168.6.212:8000/public/s4.mp3
+# http://192.168.6.212:8000/public/s1.mp3
+# http://192.168.6.212:8000/public/s2.mp3
+# http://193.168.6.212:8000/public/s3.mp3
+
+micli play_list test.txt # play the list
+```
+
+### 10. 其它应用
 
 在扩展插件中使用，比如，参考 [ZhiMsg 小爱同学 TTS 播报/执行插件](https://github.com/Yonsm/ZhiMsg)
