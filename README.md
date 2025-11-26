@@ -66,11 +66,11 @@ pip3 install .
 
 ## 手动登录流程
 
-当 Xiaomi 返回 `code=70016` 的验证提示时，CLI 会自动通过 `selenium` 弹出浏览器让你完成验证，确认如下几点：
+当 Xiaomi 返回 `code=70016` 的验证提示时，CLI 会自动通过 Playwright 弹出浏览器让你完成验证，确认如下几点：
 
-1. 已安装 `selenium>=4.10.0`（依赖里已包含）。
-2. 本地有 Chrome/Chromium 和对应版本的 `chromedriver`，或者在运行前通过 `MI_SELENIUM_DRIVER_PATH` 指定驱动地址。
-3. 在浏览器中完成登录并等待自动跳转（最终会跳到 `https://account.xiaomi.com`），此时 .mi.token 会保存新的 cookie，后续命令即可免再次手动登录。
+1. 已安装 `playwright>=1.51.0`（依赖里已包含）并运行 `playwright install chromium`（或 `firefox`/`webkit`，取决于你打算使用的内核）。
+2. Playwright 会默认使用 `chromium`，并尝试以 `chrome` 渠道启动；如果需要其它内核可以通过 `MI_PLAYWRIGHT_BROWSER=<chromium|firefox|webkit>` 覆盖，或者通过 `MI_PLAYWRIGHT_EXECUTABLE_PATH` 指定浏览器可执行文件路径；如要调整 Chromium 频道（比如 `msedge`），设置 `MI_PLAYWRIGHT_CHANNEL`。
+3. Playwright 会尝试在浏览器中自动填写 `MI_USER`/`MI_PASS` 并提交，如果失败仍需手工完成登录，最终跳到 `https://account.xiaomi.com` 时 .mi.token 会保存新的 cookie，后续命令即可免再次手动登录。
 
 ## Library
 ```

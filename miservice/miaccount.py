@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import string
+import time
 from urllib import parse
 
 from aiohttp import ClientSession
@@ -158,71 +159,186 @@ class MiAccount:
 
     def _open_manual_login_browser(self, location, callback_url, timeout):
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service as ChromeService
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.common.exceptions import TimeoutException, WebDriverException
+            from playwright.sync_api import Error as PlaywrightError, sync_playwright
         except ImportError as exc:
             raise RuntimeError(
-                "Manual login requires selenium; install it with 'pip install selenium'"
+                "Manual login requires playwright; install it with 'pip install playwright'"
             ) from exc
 
-        driver_path = os.environ.get("MI_SELENIUM_DRIVER_PATH")
-        options = Options()
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-browser-side-navigation")
-
-        driver = None
-        try:
-            service = (
-                ChromeService(executable_path=driver_path)
-                if driver_path
-                else ChromeService()
-            )
-            driver = webdriver.Chrome(service=service, options=options)
-        except WebDriverException as exc:
+        browser_name = os.environ.get("MI_PLAYWRIGHT_BROWSER", "chromium").lower()
+        if browser_name not in {"chromium", "firefox", "webkit"}:
             raise RuntimeError(
-                "Unable to start Chrome webdriver for manual login; ensure chromedriver is installed "
-                "and accessible (set MI_SELENIUM_DRIVER_PATH if needed)"
-            ) from exc
-
-        try:
-            _LOGGER.info(
-                "Manual verification required, opening browser at %s for %s", location, self.username
+                "MI_PLAYWRIGHT_BROWSER must be one of chromium, firefox, or webkit"
             )
-            _LOGGER.debug("Waiting for callback url %s", callback_url)
-            driver.get(location)
-            start_url = driver.current_url or location
+        executable_path = os.environ.get("MI_PLAYWRIGHT_EXECUTABLE_PATH")
 
-            def _login_completed(drv):
-                current = drv.current_url
-                if not current:
-                    return False
-                if callback_url:
-                    return current.startswith(callback_url)
-                return current != start_url
+        launch_options = {
+            "headless": False,
+            "args": [
+                "--disable-extensions",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-browser-side-navigation",
+            ],
+        }
+        if executable_path:
+            launch_options["executable_path"] = executable_path
+        if browser_name == "chromium":
+            launch_options["channel"] = os.environ.get("MI_PLAYWRIGHT_CHANNEL", "chrome")
 
-            WebDriverWait(driver, timeout).until(_login_completed)
-            final_url = driver.current_url
-            _LOGGER.info("Manual login finished, redirected to %s", final_url)
-            driver.get("https://account.xiaomi.com")
-            cookies = driver.get_cookies()
-            if not cookies:
-                _LOGGER.warning("Manual login browser session did not produce cookies")
-            else:
-                _LOGGER.debug("Manual login cookies after visiting account page: %s", cookies)
-            return cookies
-        except TimeoutException as exc:
-            raise RuntimeError(
-                "Timed out waiting for manual login callback; please complete the login faster"
-            ) from exc
-        finally:
-            if driver:
-                driver.quit()
+        with sync_playwright() as playwright:
+            launcher = getattr(playwright, browser_name)
+            try:
+                browser = launcher.launch(**launch_options)
+            except PlaywrightError as exc:
+                _LOGGER.debug(
+                    "PlaywrightError launching browser %s for manual login: %s",
+                    browser_name,
+                    exc,
+                )
+                raise RuntimeError(
+                    "Unable to start Playwright browser for manual login; ensure a browser is installed "
+                    "and MI_PLAYWRIGHT_EXECUTABLE_PATH points to a valid executable"
+                ) from exc
+
+            def _log_playwright_error(action, exc=None):
+                if exc:
+                    _LOGGER.debug("PlaywrightError while %s: %s", action, exc)
+                else:
+                    _LOGGER.debug("PlaywrightError while %s", action)
+
+            def _log_form_snapshot(target_page):
+                try:
+                    form = target_page.query_selector("form")
+                except PlaywrightError as exc:
+                    _log_playwright_error("querying login form", exc)
+                    return
+                if not form:
+                    return
+                try:
+                    html_snippet = form.inner_html()
+                except PlaywrightError as exc:
+                    _log_playwright_error("reading login form HTML", exc)
+                    return
+                if html_snippet:
+                    snippet = html_snippet[:1024].replace("\n", " ")
+                    _LOGGER.debug("Captured login form HTML snippet: %s", snippet)
+
+            def _try_fill_field(target_page, selectors, value):
+                for selector in selectors:
+                    try:
+                        locator = target_page.locator(selector)
+                        if locator.count() > 0:
+                            locator.fill(value)
+                            return True
+                    except PlaywrightError as exc:
+                        _log_playwright_error(f"locating field {selector}", exc)
+                        continue
+                return False
+
+            def _check_agreement_checkbox(target_page):
+                agreement_selector = "input[type='checkbox']"
+                agreement_keywords = ("agree", "协议", "隐私", "使用协议", "隐私政策")
+                try:
+                    checkbox = target_page.locator(agreement_selector)
+                except PlaywrightError as exc:
+                    _log_playwright_error("locating agreement checkbox", exc)
+                    return
+                count = checkbox.count()
+                for idx in range(min(count, 3)):
+                    try:
+                        element = checkbox.nth(idx)
+                        label = element.evaluate("el => Array.from(el.labels || []).map(l => l.innerText).join(' ').toLowerCase()")
+                        if any(keyword in (label or "").lower() for keyword in agreement_keywords):
+                            if not element.is_checked():
+                                element.check()
+                            return
+                    except PlaywrightError as exc:
+                        _log_playwright_error("checking agreement checkbox labels", exc)
+                        continue
+
+            def _auto_login_if_possible(target_page):
+                if not (self.username and self.password):
+                    return
+                _LOGGER.debug("Attempting auto login with Playwright snapshot for %s", self.username)
+                username_selectors = [
+                    "input[placeholder*='邮箱']",
+                    "input[placeholder*='手机']",
+                    "input[placeholder*='小米ID']",
+                    "input[name='user']",
+                    "input[name='account']",
+                    "input#user",
+                    "input#username",
+                ]
+                password_selectors = [
+                    "input[type='password']",
+                    "input[name='password']",
+                    "input#pwd",
+                    "input#password",
+                ]
+                _try_fill_field(target_page, username_selectors, self.username)
+                _try_fill_field(target_page, password_selectors, self.password)
+                _LOGGER.debug("Auto login fields filled for %s", self.username)
+                _check_agreement_checkbox(target_page)
+                submit_selectors = [
+                    "button[type='submit']",
+                    "button:has-text('登录')",
+                    "button:has-text('Login')",
+                    "input[type='submit']",
+                ]
+                for selector in submit_selectors:
+                    try:
+                        locator = target_page.locator(selector)
+                        if locator.count() > 0:
+                            locator.first.click(timeout=2000)
+                            return
+                    except PlaywrightError as exc:
+                        _log_playwright_error(f"clicking submit selector {selector}", exc)
+                        continue
+
+            try:
+                context = browser.new_context(ignore_https_errors=True)
+                page = context.new_page()
+                _LOGGER.info(
+                    "Manual verification required, opening browser at %s for %s",
+                    location,
+                    self.username,
+                )
+                _LOGGER.debug("Waiting for callback url %s", callback_url)
+                page.goto(location)
+                page.wait_for_timeout(1000)
+                _log_form_snapshot(page)
+                _auto_login_if_possible(page)
+                start_url = page.url or location
+                deadline = time.time() + timeout
+
+                while time.time() < deadline:
+                    current_url = page.url
+                    if current_url:
+                        if callback_url and current_url.startswith(callback_url):
+                            break
+                        if not callback_url and current_url != start_url:
+                            break
+                    time.sleep(0.5)
+                else:
+                    raise RuntimeError(
+                        "Timed out waiting for manual login callback; please complete the login faster"
+                    )
+
+                final_url = page.url
+                _LOGGER.info("Manual login finished, redirected to %s", final_url)
+                page.goto("https://account.xiaomi.com")
+                cookies = context.cookies()
+                if not cookies:
+                    _LOGGER.warning("Manual login browser session did not produce cookies")
+                else:
+                    _LOGGER.debug(
+                        "Manual login cookies after visiting account page: %s", cookies
+                    )
+                return cookies
+            finally:
+                browser.close()
 
     async def mi_request(self, sid, url, data, headers, relogin=True):
         headers["User-Agent"] = self.now_ua
