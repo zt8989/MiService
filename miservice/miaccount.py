@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -6,10 +7,13 @@ import os
 import random
 import string
 from urllib import parse
+
 from aiohttp import ClientSession
 from fake_useragent import UserAgent
 
 _LOGGER = logging.getLogger(__package__)
+
+MANUAL_LOGIN_TIMEOUT = 300
 
 
 def get_random(length):
@@ -48,11 +52,14 @@ class MiAccount:
         self.token_store = (
             MiTokenStore(token_store) if isinstance(token_store, str) else token_store
         )
+        self.token_store_backup = (
+            MiTokenStore(token_store + ".back") if isinstance(token_store, str) else None
+        )
         self.token = token_store is not None and self.token_store.load_token()
         self.ua = UserAgent()  # 初始化随机 User-Agent 生成器
         self.now_ua = self.ua.random
 
-    async def login(self, sid):
+    async def login(self, sid, _manual_login_attempted=False):
         if not self.token:
             self.token = {"deviceId": get_random(16).upper()}
         try:
@@ -67,9 +74,9 @@ class MiAccount:
                     "user": self.username,
                     "hash": hashlib.md5(self.password.encode()).hexdigest().upper(),
                 }
+                if resp["code"] == 70016 and not _manual_login_attempted:
+                    await self._handle_manual_login(resp)
                 resp = await self._serviceLogin("serviceLoginAuth2", data)
-                if resp["code"] != 0:
-                    raise Exception(resp)
 
             self.token["userId"] = resp["userId"]
             self.token["passToken"] = resp["passToken"]
@@ -122,6 +129,100 @@ class MiAccount:
             if not serviceToken:
                 raise Exception(await r.text())
         return serviceToken
+
+    async def _handle_manual_login(self, resp):
+        location = resp.get("location")
+        if not location:
+            raise Exception("Manual login required but response missing location")
+        callback_url = resp.get("callback")
+        _LOGGER.debug("Manual login challenge received: location=%s callback=%s", location, callback_url)
+        cookies = await self._manual_login_with_browser(location, callback_url)
+        self._store_manual_login_cookies(cookies)
+
+    async def _manual_login_with_browser(self, location, callback_url=None):
+        return await asyncio.to_thread(
+            self._open_manual_login_browser, location, callback_url, MANUAL_LOGIN_TIMEOUT
+        )
+
+    def _store_manual_login_cookies(self, cookies):
+        cookie_map = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+        if not cookie_map:
+            raise Exception("Manual login did not produce any cookies")
+        self.token.setdefault("cookies", {}).update(cookie_map)
+        if "userId" in cookie_map:
+            self.token["userId"] = cookie_map["userId"]
+        if "passToken" in cookie_map:
+            self.token["passToken"] = cookie_map["passToken"]
+        if self.token_store_backup:
+            self.token_store_backup.save_token(cookies)
+
+    def _open_manual_login_browser(self, location, callback_url, timeout):
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.common.exceptions import TimeoutException, WebDriverException
+        except ImportError as exc:
+            raise RuntimeError(
+                "Manual login requires selenium; install it with 'pip install selenium'"
+            ) from exc
+
+        driver_path = os.environ.get("MI_SELENIUM_DRIVER_PATH")
+        options = Options()
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-browser-side-navigation")
+
+        driver = None
+        try:
+            service = (
+                ChromeService(executable_path=driver_path)
+                if driver_path
+                else ChromeService()
+            )
+            driver = webdriver.Chrome(service=service, options=options)
+        except WebDriverException as exc:
+            raise RuntimeError(
+                "Unable to start Chrome webdriver for manual login; ensure chromedriver is installed "
+                "and accessible (set MI_SELENIUM_DRIVER_PATH if needed)"
+            ) from exc
+
+        try:
+            _LOGGER.info(
+                "Manual verification required, opening browser at %s for %s", location, self.username
+            )
+            _LOGGER.debug("Waiting for callback url %s", callback_url)
+            driver.get(location)
+            start_url = driver.current_url or location
+
+            def _login_completed(drv):
+                current = drv.current_url
+                if not current:
+                    return False
+                if callback_url:
+                    return current.startswith(callback_url)
+                return current != start_url
+
+            WebDriverWait(driver, timeout).until(_login_completed)
+            final_url = driver.current_url
+            _LOGGER.info("Manual login finished, redirected to %s", final_url)
+            driver.get("https://account.xiaomi.com")
+            cookies = driver.get_cookies()
+            if not cookies:
+                _LOGGER.warning("Manual login browser session did not produce cookies")
+            else:
+                _LOGGER.debug("Manual login cookies after visiting account page: %s", cookies)
+            return cookies
+        except TimeoutException as exc:
+            raise RuntimeError(
+                "Timed out waiting for manual login callback; please complete the login faster"
+            ) from exc
+        finally:
+            if driver:
+                driver.quit()
 
     async def mi_request(self, sid, url, data, headers, relogin=True):
         headers["User-Agent"] = self.now_ua
